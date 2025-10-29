@@ -163,13 +163,21 @@ public class AADS {
                     String precObj = vpObj.substring(precObjStart, precObjEnd + 1);
 
                     // Extract all angle:precision pairs
+                    // Format: { "a1": -123.45, "a2": -678.90 }
                     String[] parts = precObj.split(",");
                     for (String part : parts) {
                         if (part.contains(":")) {
-                            String angleId = extractStringValue(part, "\"");
-                            if (!angleId.isEmpty() && angleId.startsWith("a")) {
-                                double precision = extractDoubleFromPair(part);
-                                vp.addPrecision(angleId, precision);
+                            // Extract angle ID between quotes
+                            int firstQuote = part.indexOf("\"");
+                            if (firstQuote >= 0) {
+                                int secondQuote = part.indexOf("\"", firstQuote + 1);
+                                if (secondQuote > firstQuote) {
+                                    String angleId = part.substring(firstQuote + 1, secondQuote);
+                                    if (angleId.startsWith("a")) {
+                                        double precision = extractDoubleFromPair(part);
+                                        vp.addPrecision(angleId, precision);
+                                    }
+                                }
                             }
                         }
                     }
@@ -466,17 +474,18 @@ public class AADS {
             for (ViewPoint vp : vpList) {
                 if (currentTour.contains(vp)) continue;
 
-                // Calculate coverage benefit
+                // Calculate coverage benefit - count ALL coverings, not just unique samples
+                // This allows a viewpoint to cover the same sample multiple times with different angles
                 int newCoverage = 0;
                 for (SamplePoint sp : samplePoints.values()) {
                     int currentCoverage = coverageCount.getOrDefault(sp.getId(), 0);
                     if (currentCoverage >= 3) continue; // Already covered 3+ times
 
-                    // Check if this viewpoint can cover this sample
+                    // Check if this viewpoint can cover this sample (count once per sample)
                     for (String[] pair : sp.getCoveringPairs()) {
                         if (pair[0].equals(vp.getId())) {
                             newCoverage++;
-                            break;
+                            break; // Count each sample once for greedy selection
                         }
                     }
                 }
@@ -580,7 +589,236 @@ public class AADS {
         System.err.println("Greedy: " + solution.getTour().size() + " viewpoints, " +
                 coveredSamples.size() + "/" + samplePoints.size() + " samples fully covered");
 
+        // Phase 2: Improvement - try to add viewpoints for under-covered samples
+        // by attempting more flexible insertion strategies
+        improveCoverage(solution, viewPoints, samplePoints, collisionMatrix, vpIndex,
+                coverageCount, coveredSamples);
+
+        System.err.println("After improvement: " + solution.getTour().size() + " viewpoints, " +
+                coveredSamples.size() + "/" + samplePoints.size() + " samples fully covered");
+
         return solution;
+    }
+
+    private static void improveCoverage(Solution solution,
+                                        Map<String, ViewPoint> viewPoints,
+                                        Map<String, SamplePoint> samplePoints,
+                                        int[][] collisionMatrix,
+                                        Map<String, Integer> vpIndex,
+                                        Map<String, Integer> coverageCount,
+                                        Set<String> coveredSamples) {
+        // Find under-covered samples
+        List<SamplePoint> underCovered = new ArrayList<>();
+        for (SamplePoint sp : samplePoints.values()) {
+            int coverage = coverageCount.getOrDefault(sp.getId(), 0);
+            if (coverage < 3) {
+                underCovered.add(sp);
+            }
+        }
+
+        if (underCovered.isEmpty()) {
+            return; // All samples covered
+        }
+
+        System.err.println("Attempting to improve coverage for " + underCovered.size() + " under-covered samples");
+
+        List<ViewPoint> tour = solution.getTour();
+        Set<ViewPoint> tourSet = new HashSet<>(tour);
+
+        // Collect viewpoints that could help with under-covered samples
+        Set<ViewPoint> candidateVPs = new HashSet<>();
+        for (SamplePoint sp : underCovered) {
+            for (String[] pair : sp.getCoveringPairs()) {
+                ViewPoint vp = viewPoints.get(pair[0]);
+                if (vp != null && !tourSet.contains(vp)) {
+                    candidateVPs.add(vp);
+                }
+            }
+        }
+
+        System.err.println("Found " + candidateVPs.size() + " candidate viewpoints to try");
+
+        // Try to insert each candidate viewpoint anywhere in the tour
+        // Allow multiple attempts with different relaxation strategies
+        int addedCount = 0;
+        for (ViewPoint candidate : candidateVPs) {
+            Integer candIdx = vpIndex.get(candidate.getId());
+            if (candIdx == null) continue;
+
+            // Try inserting at each position (skip position 0 to preserve mandatory start)
+            for (int pos = 1; pos <= tour.size(); pos++) {
+                // Check connectivity
+                ViewPoint prev = tour.get(pos - 1);
+                ViewPoint next = (pos < tour.size()) ? tour.get(pos) : tour.get(0);
+
+                Integer prevIdx = vpIndex.get(prev.getId());
+                Integer nextIdx = vpIndex.get(next.getId());
+
+                if (prevIdx != null && nextIdx != null &&
+                        collisionMatrix[prevIdx][candIdx] == 1 &&
+                        collisionMatrix[candIdx][nextIdx] == 1) {
+
+                    // Valid insertion position found!
+                    tour.add(pos, candidate);
+                    solution.getSelectedAngles().putIfAbsent(candidate, new HashSet<>());
+
+                    // Update coverage
+                    for (SamplePoint sp : samplePoints.values()) {
+                        for (String[] pair : sp.getCoveringPairs()) {
+                            if (pair[0].equals(candidate.getId())) {
+                                String angleId = pair[1];
+                                solution.addAngle(candidate, angleId);
+
+                                coverageCount.put(sp.getId(),
+                                        coverageCount.getOrDefault(sp.getId(), 0) + 1);
+                                if (coverageCount.get(sp.getId()) >= 3) {
+                                    coveredSamples.add(sp.getId());
+                                }
+                            }
+                        }
+                    }
+
+                    addedCount++;
+                    System.err.println("  Added " + candidate.getId() + " at position " + pos);
+                    break; // Move to next candidate
+                }
+            }
+
+            // Stop if all samples are covered
+            if (coveredSamples.size() >= samplePoints.size()) {
+                break;
+            }
+        }
+
+        System.err.println("Improvement phase added " + addedCount + " viewpoints");
+
+        // If simple insertion didn't work, try swap-based improvement
+        if (!underCovered.isEmpty() && addedCount == 0) {
+            System.err.println("Attempting swap-based improvement...");
+            swapBasedImprovement(solution, viewPoints, samplePoints, collisionMatrix, vpIndex,
+                    coverageCount, coveredSamples, candidateVPs);
+        }
+    }
+
+    private static void swapBasedImprovement(Solution solution,
+                                              Map<String, ViewPoint> viewPoints,
+                                              Map<String, SamplePoint> samplePoints,
+                                              int[][] collisionMatrix,
+                                              Map<String, Integer> vpIndex,
+                                              Map<String, Integer> coverageCount,
+                                              Set<String> coveredSamples,
+                                              Set<ViewPoint> candidateVPs) {
+        List<ViewPoint> tour = solution.getTour();
+        int swapsPerformed = 0;
+
+        // Try swapping each candidate with each tour viewpoint (except mandatory)
+        for (ViewPoint candidate : candidateVPs) {
+            Integer candIdx = vpIndex.get(candidate.getId());
+            if (candIdx == null) continue;
+
+            // Try replacing each non-mandatory viewpoint in the tour
+            for (int pos = 1; pos < tour.size(); pos++) { // Skip position 0 (mandatory)
+                ViewPoint current = tour.get(pos);
+                if (current.isMandatory()) continue;
+
+                // Check if candidate can replace current while maintaining connectivity
+                ViewPoint prev = tour.get(pos - 1);
+                ViewPoint next = (pos < tour.size() - 1) ? tour.get(pos + 1) : tour.get(0);
+
+                Integer prevIdx = vpIndex.get(prev.getId());
+                Integer nextIdx = vpIndex.get(next.getId());
+
+                if (prevIdx != null && nextIdx != null &&
+                        collisionMatrix[prevIdx][candIdx] == 1 &&
+                        collisionMatrix[candIdx][nextIdx] == 1) {
+
+                    // Check if this swap improves coverage
+                    int coverageLost = 0;
+                    int coverageGained = 0;
+
+                    // Calculate coverage lost by removing current
+                    Set<String> currentAngles = solution.getSelectedAngles().get(current);
+                    if (currentAngles != null) {
+                        for (SamplePoint sp : samplePoints.values()) {
+                            for (String[] pair : sp.getCoveringPairs()) {
+                                if (pair[0].equals(current.getId()) &&
+                                        currentAngles.contains(pair[1])) {
+                                    int coverage = coverageCount.getOrDefault(sp.getId(), 0);
+                                    if (coverage <= 3) { // Would drop below 3x coverage
+                                        coverageLost++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Calculate coverage gained by adding candidate
+                    for (SamplePoint sp : samplePoints.values()) {
+                        int coverage = coverageCount.getOrDefault(sp.getId(), 0);
+                        if (coverage < 3) {
+                            for (String[] pair : sp.getCoveringPairs()) {
+                                if (pair[0].equals(candidate.getId())) {
+                                    coverageGained++;
+                                }
+                            }
+                        }
+                    }
+
+                    // Perform swap if it improves coverage
+                    if (coverageGained > coverageLost) {
+                        // Remove current viewpoint's contribution
+                        if (currentAngles != null) {
+                            for (SamplePoint sp : samplePoints.values()) {
+                                for (String[] pair : sp.getCoveringPairs()) {
+                                    if (pair[0].equals(current.getId()) &&
+                                            currentAngles.contains(pair[1])) {
+                                        coverageCount.put(sp.getId(),
+                                                coverageCount.get(sp.getId()) - 1);
+                                        if (coverageCount.get(sp.getId()) < 3) {
+                                            coveredSamples.remove(sp.getId());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Replace in tour
+                        tour.set(pos, candidate);
+                        solution.getSelectedAngles().remove(current);
+                        solution.getSelectedAngles().putIfAbsent(candidate, new HashSet<>());
+
+                        // Add candidate's contribution
+                        for (SamplePoint sp : samplePoints.values()) {
+                            for (String[] pair : sp.getCoveringPairs()) {
+                                if (pair[0].equals(candidate.getId())) {
+                                    String angleId = pair[1];
+                                    solution.addAngle(candidate, angleId);
+
+                                    coverageCount.put(sp.getId(),
+                                            coverageCount.getOrDefault(sp.getId(), 0) + 1);
+                                    if (coverageCount.get(sp.getId()) >= 3) {
+                                        coveredSamples.add(sp.getId());
+                                    }
+                                }
+                            }
+                        }
+
+                        swapsPerformed++;
+                        System.err.println("  Swapped " + current.getId() +
+                                " with " + candidate.getId() + " at position " + pos +
+                                " (lost=" + coverageLost + ", gained=" + coverageGained + ")");
+                        break; // Move to next candidate
+                    }
+                }
+            }
+
+            // Stop if all samples are covered
+            if (coveredSamples.size() >= samplePoints.size()) {
+                break;
+            }
+        }
+
+        System.err.println("Swap-based improvement performed " + swapsPerformed + " swaps");
     }
 
     private static void calculateMetrics(Solution solution, Map<String, ViewPoint> viewPoints) {
