@@ -391,6 +391,13 @@ public class AADS {
         int[][] collisionMatrix = parseCollisionMatrix(input);
         checkTimeLimit("After parsing");
 
+        // Build viewpoint index for validation
+        List<ViewPoint> vpList = new ArrayList<>(viewPoints.values());
+        Map<String, Integer> vpIndex = new HashMap<>();
+        for (int i = 0; i < vpList.size(); i++) {
+            vpIndex.put(vpList.get(i).getId(), i);
+        }
+
         // Phase 2: Greedy construction
         System.err.println("Phase 2: Greedy construction...");
         Solution solution = greedyConstruction(viewPoints, samplePoints, collisionMatrix);
@@ -399,6 +406,14 @@ public class AADS {
         // Phase 3: Calculate metrics
         System.err.println("Phase 3: Calculating metrics...");
         calculateMetrics(solution, viewPoints);
+
+        // Phase 4: Validate solution
+        System.err.println("Phase 4: Validating solution...");
+        boolean isValid = validateSolution(solution, viewPoints, samplePoints, vpIndex, collisionMatrix);
+        if (!isValid) {
+            System.err.println("WARNING: Solution does not satisfy all constraints!");
+        }
+        checkTimeLimit("After validation");
 
         System.err.println("Solution: " + solution.getTour().size() + " viewpoints, " +
                 "distance=" + String.format("%.2f", solution.getTotalDistance()) +
@@ -421,24 +436,37 @@ public class AADS {
             vpIndex.put(vpList.get(i).getId(), i);
         }
 
-        // Add mandatory viewpoints first
+        // Find and add mandatory viewpoint as starting point
+        ViewPoint mandatoryVP = null;
         for (ViewPoint vp : vpList) {
             if (vp.isMandatory()) {
+                mandatoryVP = vp;
                 solution.addViewPoint(vp);
-                System.err.println("Added mandatory viewpoint: " + vp.getId());
+                System.err.println("Added mandatory viewpoint as tour start: " + vp.getId());
+                break;
             }
         }
 
+        if (mandatoryVP == null) {
+            System.err.println("ERROR: No mandatory viewpoint found!");
+            return solution;
+        }
+
         // Greedy: select viewpoints that cover most uncovered samples
+        // and can be connected to the tour via collision matrix
         while (coveredSamples.size() < samplePoints.size() && solution.getTour().size() < vpList.size()) {
             checkTimeLimit("During greedy");
 
             ViewPoint bestVP = null;
             int maxNewCoverage = 0;
+            int bestInsertPosition = -1;
+
+            List<ViewPoint> currentTour = solution.getTour();
 
             for (ViewPoint vp : vpList) {
-                if (solution.getTour().contains(vp)) continue;
+                if (currentTour.contains(vp)) continue;
 
+                // Calculate coverage benefit
                 int newCoverage = 0;
                 for (SamplePoint sp : samplePoints.values()) {
                     int currentCoverage = coverageCount.getOrDefault(sp.getId(), 0);
@@ -453,15 +481,83 @@ public class AADS {
                     }
                 }
 
-                if (newCoverage > maxNewCoverage) {
+                // Only consider viewpoints that provide coverage benefit
+                if (newCoverage == 0) continue;
+
+                // Check if this viewpoint can be connected to the tour
+                // Find the best position to insert this viewpoint
+                Integer vpIdx = vpIndex.get(vp.getId());
+                if (vpIdx == null) continue;
+
+                int bestPos = -1;
+                double minDistanceIncrease = Double.MAX_VALUE;
+
+                // Try inserting at each position in the tour
+                // NOTE: Position 0 is reserved for the mandatory viewpoint, so we start from position 1
+                int startPos = (currentTour.size() == 1) ? 1 : 1;
+                int endPos = currentTour.size();
+
+                for (int pos = startPos; pos <= endPos; pos++) {
+                    int prevIdx = -1;
+                    int nextIdx = -1;
+
+                    if (currentTour.size() == 1) {
+                        // Special case: only mandatory viewpoint in tour
+                        // Check if we can go from mandatory -> vp -> mandatory
+                        prevIdx = vpIndex.get(currentTour.get(0).getId());
+                        nextIdx = prevIdx;
+                    } else if (pos == currentTour.size()) {
+                        // Insert at end: check last -> vp and vp -> mandatory (position 0)
+                        prevIdx = vpIndex.get(currentTour.get(currentTour.size() - 1).getId());
+                        nextIdx = vpIndex.get(currentTour.get(0).getId());
+                    } else {
+                        // Insert in middle: check prev -> vp and vp -> next
+                        prevIdx = vpIndex.get(currentTour.get(pos - 1).getId());
+                        nextIdx = vpIndex.get(currentTour.get(pos).getId());
+                    }
+
+                    // Check if connections are valid in collision matrix
+                    if (prevIdx >= 0 && nextIdx >= 0 &&
+                        collisionMatrix[prevIdx][vpIdx] == 1 &&
+                        collisionMatrix[vpIdx][nextIdx] == 1) {
+
+                        // Calculate distance increase
+                        double distIncrease = currentTour.get(pos == 0 ? currentTour.size() - 1 : pos - 1).distanceTo(vp) +
+                                             vp.distanceTo(currentTour.get(pos == currentTour.size() ? 0 : pos));
+
+                        if (pos > 0 && pos < currentTour.size()) {
+                            distIncrease -= currentTour.get(pos - 1).distanceTo(currentTour.get(pos));
+                        }
+
+                        if (distIncrease < minDistanceIncrease) {
+                            minDistanceIncrease = distIncrease;
+                            bestPos = pos;
+                        }
+                    }
+                }
+
+                // If we found a valid insertion position and this viewpoint has better coverage
+                if (bestPos >= 0 && newCoverage > maxNewCoverage) {
                     maxNewCoverage = newCoverage;
                     bestVP = vp;
+                    bestInsertPosition = bestPos;
                 }
             }
 
-            if (bestVP == null || maxNewCoverage == 0) break;
+            if (bestVP == null || maxNewCoverage == 0) {
+                System.err.println("No more connectable viewpoints with coverage benefit");
+                break;
+            }
 
-            solution.addViewPoint(bestVP);
+            // Insert viewpoint at the best position
+            // Ensure we never insert at position 0 (reserved for mandatory viewpoint)
+            if (bestInsertPosition > 0 && bestInsertPosition < currentTour.size()) {
+                currentTour.add(bestInsertPosition, bestVP);
+            } else {
+                // Insert at the end
+                currentTour.add(bestVP);
+            }
+            solution.getSelectedAngles().putIfAbsent(bestVP, new HashSet<>());
 
             // Update coverage
             for (SamplePoint sp : samplePoints.values()) {
@@ -514,6 +610,212 @@ public class AADS {
 
         // Objective: distance - precision
         solution.setObjectiveValue(totalDist - totalPrec);
+    }
+
+    // ==================== Validation Functions ====================
+
+    /**
+     * Validates that the tour forms a continuous, connected path.
+     * Ensures consecutive viewpoints have collision_matrix[i][j] == 1.
+     * Returns true if tour is valid, false otherwise.
+     */
+    private static boolean validateTourConnectivity(Solution solution,
+                                                     Map<String, Integer> vpIndex,
+                                                     int[][] collisionMatrix) {
+        List<ViewPoint> tour = solution.getTour();
+
+        if (tour.isEmpty()) {
+            System.err.println("VALIDATION ERROR: Empty tour");
+            return false;
+        }
+
+        if (tour.size() == 1) {
+            // Single viewpoint tour is valid if it's the mandatory one
+            return tour.get(0).isMandatory();
+        }
+
+        // Check connectivity between consecutive viewpoints
+        for (int i = 0; i < tour.size() - 1; i++) {
+            ViewPoint current = tour.get(i);
+            ViewPoint next = tour.get(i + 1);
+
+            Integer currentIdx = vpIndex.get(current.getId());
+            Integer nextIdx = vpIndex.get(next.getId());
+
+            if (currentIdx == null || nextIdx == null) {
+                System.err.println("VALIDATION ERROR: Viewpoint not in index - " +
+                    current.getId() + " or " + next.getId());
+                return false;
+            }
+
+            // Check if connection is allowed
+            if (collisionMatrix[currentIdx][nextIdx] != 1) {
+                System.err.println("VALIDATION ERROR: Invalid connection from " +
+                    current.getId() + " (idx " + currentIdx + ") to " +
+                    next.getId() + " (idx " + nextIdx + ") - collision_matrix[" +
+                    currentIdx + "][" + nextIdx + "] = " +
+                    collisionMatrix[currentIdx][nextIdx]);
+                return false;
+            }
+        }
+
+        // Check closing edge (from last back to first)
+        if (tour.size() > 1) {
+            ViewPoint last = tour.get(tour.size() - 1);
+            ViewPoint first = tour.get(0);
+
+            Integer lastIdx = vpIndex.get(last.getId());
+            Integer firstIdx = vpIndex.get(first.getId());
+
+            if (lastIdx == null || firstIdx == null) {
+                System.err.println("VALIDATION ERROR: Viewpoint not in index (closing edge)");
+                return false;
+            }
+
+            if (collisionMatrix[lastIdx][firstIdx] != 1) {
+                System.err.println("VALIDATION ERROR: Cannot close tour - invalid connection from " +
+                    last.getId() + " (idx " + lastIdx + ") back to " +
+                    first.getId() + " (idx " + firstIdx + ") - collision_matrix[" +
+                    lastIdx + "][" + firstIdx + "] = " +
+                    collisionMatrix[lastIdx][firstIdx]);
+                return false;
+            }
+        }
+
+        System.err.println("Tour connectivity: VALID");
+        return true;
+    }
+
+    /**
+     * Validates coverage constraints:
+     * 1. Each sample point must be covered at least 3 times from different viewpoint-direction pairs
+     * 2. All sample points must be covered by at least one viewpoint-direction pair
+     */
+    private static boolean validateCoverageConstraints(Solution solution,
+                                                        Map<String, SamplePoint> samplePoints) {
+        Map<String, Integer> coverageCount = new HashMap<>();
+        Map<String, Set<String>> coveringViewpoints = new HashMap<>(); // sample_id -> set of viewpoint_ids
+
+        List<ViewPoint> tour = solution.getTour();
+        Map<ViewPoint, Set<String>> selectedAngles = solution.getSelectedAngles();
+
+        // Build set of selected viewpoint-angle pairs
+        Set<String> selectedPairs = new HashSet<>();
+        for (ViewPoint vp : tour) {
+            Set<String> angles = selectedAngles.get(vp);
+            if (angles != null) {
+                for (String angle : angles) {
+                    selectedPairs.add(vp.getId() + ":" + angle);
+                }
+            }
+        }
+
+        // Count coverage for each sample point
+        for (SamplePoint sp : samplePoints.values()) {
+            int count = 0;
+            Set<String> coveringVPs = new HashSet<>();
+
+            for (String[] pair : sp.getCoveringPairs()) {
+                String vpId = pair[0];
+                String angleId = pair[1];
+                String pairKey = vpId + ":" + angleId;
+
+                if (selectedPairs.contains(pairKey)) {
+                    count++;
+                    coveringVPs.add(vpId);
+                }
+            }
+
+            coverageCount.put(sp.getId(), count);
+            coveringViewpoints.put(sp.getId(), coveringVPs);
+        }
+
+        // Validate constraints
+        boolean allValid = true;
+        int uncoveredCount = 0;
+        int underCoveredCount = 0;
+
+        for (SamplePoint sp : samplePoints.values()) {
+            int count = coverageCount.getOrDefault(sp.getId(), 0);
+
+            if (count == 0) {
+                uncoveredCount++;
+                allValid = false;
+            } else if (count < 3) {
+                underCoveredCount++;
+                allValid = false;
+            }
+        }
+
+        if (uncoveredCount > 0) {
+            System.err.println("VALIDATION ERROR: " + uncoveredCount +
+                " sample points are not covered at all");
+        }
+
+        if (underCoveredCount > 0) {
+            System.err.println("VALIDATION ERROR: " + underCoveredCount +
+                " sample points are covered less than 3 times");
+        }
+
+        if (allValid) {
+            System.err.println("Coverage constraints: VALID (all " + samplePoints.size() +
+                " samples covered 3+ times)");
+        } else {
+            System.err.println("Coverage constraints: INVALID (" +
+                (samplePoints.size() - uncoveredCount - underCoveredCount) + "/" +
+                samplePoints.size() + " samples properly covered)");
+        }
+
+        return allValid;
+    }
+
+    /**
+     * Validates that the tour starts and ends at the mandatory viewpoint.
+     */
+    private static boolean validateMandatoryStartEnd(Solution solution) {
+        List<ViewPoint> tour = solution.getTour();
+
+        if (tour.isEmpty()) {
+            System.err.println("VALIDATION ERROR: Empty tour");
+            return false;
+        }
+
+        ViewPoint first = tour.get(0);
+
+        if (!first.isMandatory()) {
+            System.err.println("VALIDATION ERROR: Tour does not start at mandatory viewpoint. " +
+                "First viewpoint: " + first.getId());
+            return false;
+        }
+
+        // Since the tour is a cycle, starting at mandatory means we also end there
+        System.err.println("Mandatory start/end: VALID (tour starts at " + first.getId() + ")");
+        return true;
+    }
+
+    /**
+     * Comprehensive validation of the solution.
+     */
+    private static boolean validateSolution(Solution solution,
+                                             Map<String, ViewPoint> viewPoints,
+                                             Map<String, SamplePoint> samplePoints,
+                                             Map<String, Integer> vpIndex,
+                                             int[][] collisionMatrix) {
+        System.err.println("\n=== Solution Validation ===");
+
+        boolean mandatoryValid = validateMandatoryStartEnd(solution);
+        boolean connectivityValid = validateTourConnectivity(solution, vpIndex, collisionMatrix);
+        boolean coverageValid = validateCoverageConstraints(solution, samplePoints);
+
+        boolean allValid = mandatoryValid && connectivityValid && coverageValid;
+
+        if (allValid) {
+            System.err.println("=== ALL VALIDATIONS PASSED ===\n");
+        } else {
+            System.err.println("=== VALIDATION FAILED ===\n");
+        }
+
+        return allValid;
     }
 
     // ==================== Main ====================
