@@ -527,12 +527,12 @@ public class AADS {
 
                     // Check if connections are valid in collision matrix
                     if (prevIdx >= 0 && nextIdx >= 0 &&
-                        collisionMatrix[prevIdx][vpIdx] == 1 &&
-                        collisionMatrix[vpIdx][nextIdx] == 1) {
+                            collisionMatrix[prevIdx][vpIdx] == 1 &&
+                            collisionMatrix[vpIdx][nextIdx] == 1) {
 
                         // Calculate distance increase
                         double distIncrease = currentTour.get(pos == 0 ? currentTour.size() - 1 : pos - 1).distanceTo(vp) +
-                                             vp.distanceTo(currentTour.get(pos == currentTour.size() ? 0 : pos));
+                                vp.distanceTo(currentTour.get(pos == currentTour.size() ? 0 : pos));
 
                         if (pos > 0 && pos < currentTour.size()) {
                             distIncrease -= currentTour.get(pos - 1).distanceTo(currentTour.get(pos));
@@ -701,13 +701,13 @@ public class AADS {
     }
 
     private static void swapBasedImprovement(Solution solution,
-                                              Map<String, ViewPoint> viewPoints,
-                                              Map<String, SamplePoint> samplePoints,
-                                              int[][] collisionMatrix,
-                                              Map<String, Integer> vpIndex,
-                                              Map<String, Integer> coverageCount,
-                                              Set<String> coveredSamples,
-                                              Set<ViewPoint> candidateVPs) {
+                                             Map<String, ViewPoint> viewPoints,
+                                             Map<String, SamplePoint> samplePoints,
+                                             int[][] collisionMatrix,
+                                             Map<String, Integer> vpIndex,
+                                             Map<String, Integer> coverageCount,
+                                             Set<String> coveredSamples,
+                                             Set<ViewPoint> candidateVPs) {
         List<ViewPoint> tour = solution.getTour();
         int swapsPerformed = 0;
 
@@ -858,8 +858,8 @@ public class AADS {
      * Returns true if tour is valid, false otherwise.
      */
     private static boolean validateTourConnectivity(Solution solution,
-                                                     Map<String, Integer> vpIndex,
-                                                     int[][] collisionMatrix) {
+                                                    Map<String, Integer> vpIndex,
+                                                    int[][] collisionMatrix) {
         List<ViewPoint> tour = solution.getTour();
 
         if (tour.isEmpty()) {
@@ -882,17 +882,17 @@ public class AADS {
 
             if (currentIdx == null || nextIdx == null) {
                 System.err.println("VALIDATION ERROR: Viewpoint not in index - " +
-                    current.getId() + " or " + next.getId());
+                        current.getId() + " or " + next.getId());
                 return false;
             }
 
             // Check if connection is allowed
             if (collisionMatrix[currentIdx][nextIdx] != 1) {
                 System.err.println("VALIDATION ERROR: Invalid connection from " +
-                    current.getId() + " (idx " + currentIdx + ") to " +
-                    next.getId() + " (idx " + nextIdx + ") - collision_matrix[" +
-                    currentIdx + "][" + nextIdx + "] = " +
-                    collisionMatrix[currentIdx][nextIdx]);
+                        current.getId() + " (idx " + currentIdx + ") to " +
+                        next.getId() + " (idx " + nextIdx + ") - collision_matrix[" +
+                        currentIdx + "][" + nextIdx + "] = " +
+                        collisionMatrix[currentIdx][nextIdx]);
                 return false;
             }
         }
@@ -912,10 +912,10 @@ public class AADS {
 
             if (collisionMatrix[lastIdx][firstIdx] != 1) {
                 System.err.println("VALIDATION ERROR: Cannot close tour - invalid connection from " +
-                    last.getId() + " (idx " + lastIdx + ") back to " +
-                    first.getId() + " (idx " + firstIdx + ") - collision_matrix[" +
-                    lastIdx + "][" + firstIdx + "] = " +
-                    collisionMatrix[lastIdx][firstIdx]);
+                        last.getId() + " (idx " + lastIdx + ") back to " +
+                        first.getId() + " (idx " + firstIdx + ") - collision_matrix[" +
+                        lastIdx + "][" + firstIdx + "] = " +
+                        collisionMatrix[lastIdx][firstIdx]);
                 return false;
             }
         }
@@ -930,7 +930,7 @@ public class AADS {
      * 2. All sample points must be covered by at least one viewpoint-direction pair
      */
     private static boolean validateCoverageConstraints(Solution solution,
-                                                        Map<String, SamplePoint> samplePoints) {
+                                                       Map<String, SamplePoint> samplePoints) {
         Map<String, Integer> coverageCount = new HashMap<>();
         Map<String, Set<String>> coveringViewpoints = new HashMap<>(); // sample_id -> set of viewpoint_ids
 
@@ -987,21 +987,21 @@ public class AADS {
 
         if (uncoveredCount > 0) {
             System.err.println("VALIDATION ERROR: " + uncoveredCount +
-                " sample points are not covered at all");
+                    " sample points are not covered at all");
         }
 
         if (underCoveredCount > 0) {
             System.err.println("VALIDATION ERROR: " + underCoveredCount +
-                " sample points are covered less than 3 times");
+                    " sample points are covered less than 3 times");
         }
 
         if (allValid) {
             System.err.println("Coverage constraints: VALID (all " + samplePoints.size() +
-                " samples covered 3+ times)");
+                    " samples covered 3+ times)");
         } else {
             System.err.println("Coverage constraints: INVALID (" +
-                (samplePoints.size() - uncoveredCount - underCoveredCount) + "/" +
-                samplePoints.size() + " samples properly covered)");
+                    (samplePoints.size() - uncoveredCount - underCoveredCount) + "/" +
+                    samplePoints.size() + " samples properly covered)");
         }
 
         return allValid;
@@ -1022,7 +1022,7 @@ public class AADS {
 
         if (!first.isMandatory()) {
             System.err.println("VALIDATION ERROR: Tour does not start at mandatory viewpoint. " +
-                "First viewpoint: " + first.getId());
+                    "First viewpoint: " + first.getId());
             return false;
         }
 
@@ -1035,10 +1035,10 @@ public class AADS {
      * Comprehensive validation of the solution.
      */
     private static boolean validateSolution(Solution solution,
-                                             Map<String, ViewPoint> viewPoints,
-                                             Map<String, SamplePoint> samplePoints,
-                                             Map<String, Integer> vpIndex,
-                                             int[][] collisionMatrix) {
+                                            Map<String, ViewPoint> viewPoints,
+                                            Map<String, SamplePoint> samplePoints,
+                                            Map<String, Integer> vpIndex,
+                                            int[][] collisionMatrix) {
         System.err.println("\n=== Solution Validation ===");
 
         boolean mandatoryValid = validateMandatoryStartEnd(solution);
